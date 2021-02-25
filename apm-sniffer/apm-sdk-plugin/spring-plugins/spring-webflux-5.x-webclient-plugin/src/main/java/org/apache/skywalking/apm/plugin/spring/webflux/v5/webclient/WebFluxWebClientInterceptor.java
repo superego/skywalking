@@ -34,7 +34,6 @@ import reactor.core.publisher.Mono;
 
 import java.lang.reflect.Method;
 import java.net.URI;
-import java.util.function.BiConsumer;
 
 public class WebFluxWebClientInterceptor implements InstanceMethodsAroundInterceptor {
 
@@ -79,22 +78,19 @@ public class WebFluxWebClientInterceptor implements InstanceMethodsAroundInterce
         }
         Mono<ClientResponse> ret1 = (Mono<ClientResponse>) ret;
         AbstractSpan span = (AbstractSpan) objInst.getSkyWalkingDynamicField();
-        return ret1.doAfterSuccessOrError(new BiConsumer<ClientResponse, Throwable>() {
-            @Override
-            public void accept(ClientResponse clientResponse, Throwable throwable) {
-                HttpStatus httpStatus = clientResponse.statusCode();
-                if (httpStatus != null) {
-                    Tags.STATUS_CODE.set(span, Integer.toString(httpStatus.value()));
-                    if (httpStatus.isError()) {
-                        span.errorOccurred();
-                    }
-                }
+        return ret1.doAfterSuccessOrError((resp, t) -> {
+            if (resp == null) {
+                Tags.STATUS_CODE.set(span, "200");  // OK without response.
+
+                return;
             }
-        }).doOnError(error -> {
-            span.log(error);
-        }).doFinally(s -> {
-            span.asyncFinish();
-        });
+
+            HttpStatus httpStatus = resp.statusCode();
+            Tags.STATUS_CODE.set(span, Integer.toString(httpStatus.value()));
+            if (httpStatus.isError()) {
+                span.errorOccurred();
+            }
+        }).doOnError(span::log).doFinally(s -> span.asyncFinish());
     }
 
     @Override
