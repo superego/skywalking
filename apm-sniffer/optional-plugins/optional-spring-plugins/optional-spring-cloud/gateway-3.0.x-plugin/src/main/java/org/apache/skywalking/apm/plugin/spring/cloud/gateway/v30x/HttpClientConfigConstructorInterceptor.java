@@ -24,6 +24,5 @@ public class HttpClientConfigConstructorInterceptor implements InstanceConstruct
 
     @Override
     public void onConstruct(EnhancedInstance objInst, Object[] allArguments) {
-        System.out.println(objInst);
     }
 }

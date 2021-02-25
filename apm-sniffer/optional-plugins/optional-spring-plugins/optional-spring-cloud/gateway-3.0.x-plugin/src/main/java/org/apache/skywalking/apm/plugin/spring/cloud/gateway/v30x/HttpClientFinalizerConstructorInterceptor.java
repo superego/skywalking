@@ -28,7 +28,5 @@ public class HttpClientFinalizerConstructorInterceptor implements InstanceConstr
         if (objInst.getSkyWalkingDynamicField() == null) {
             objInst.setSkyWalkingDynamicField(new EnhanceObjectCache());
         }
-
-        System.out.println(allArguments[0] instanceof EnhancedInstance);
     }
 }
