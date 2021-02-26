@@ -17,23 +17,27 @@
 
 package org.apache.skywalking.apm.plugin.spring.cloud.gateway.v30x;
 
+import org.apache.skywalking.apm.agent.core.context.ContextCarrier;
 import org.apache.skywalking.apm.agent.core.context.ContextManager;
-import org.apache.skywalking.apm.agent.core.context.ContextSnapshot;
+import org.apache.skywalking.apm.agent.core.context.tag.Tags;
 import org.apache.skywalking.apm.agent.core.context.trace.AbstractSpan;
+import org.apache.skywalking.apm.agent.core.context.trace.SpanLayer;
 import org.apache.skywalking.apm.agent.core.plugin.interceptor.enhance.EnhancedInstance;
 import org.apache.skywalking.apm.agent.core.plugin.interceptor.enhance.InstanceMethodsAroundInterceptor;
 import org.apache.skywalking.apm.agent.core.plugin.interceptor.enhance.MethodInterceptResult;
 import org.springframework.web.server.ServerWebExchange;
 import org.springframework.web.server.ServerWebExchangeDecorator;
 import org.springframework.web.server.adapter.DefaultServerWebExchange;
+import reactor.core.publisher.Mono;
 
 import java.lang.reflect.Method;
+import java.net.URI;
 
 import static org.apache.skywalking.apm.network.trace.component.ComponentsDefine.SPRING_CLOUD_GATEWAY;
+import static org.springframework.http.HttpStatus.INTERNAL_SERVER_ERROR;
+import static org.springframework.http.HttpStatus.OK;
 
 public class WebFilterInterceptor implements InstanceMethodsAroundInterceptor {
-
-    private boolean b;
 
     @Override
     public void beforeMethod(EnhancedInstance objInst, Method method, Object[] allArguments, Class<?>[] argumentsTypes,
@@ -41,13 +45,24 @@ public class WebFilterInterceptor implements InstanceMethodsAroundInterceptor {
         ServerWebExchange exchange = (ServerWebExchange) allArguments[0];
         EnhancedInstance enhancedInstance = getInstance(exchange);
 
-        AbstractSpan span = ContextManager.createLocalSpan("OAuth2.0/Password/Login");
-        if (enhancedInstance != null && enhancedInstance.getSkyWalkingDynamicField() != null) {
-            ContextManager.continued((ContextSnapshot) enhancedInstance.getSkyWalkingDynamicField());
-        }
+        URI url = exchange.getRequest().getURI();
+        ContextCarrier carrier = new ContextCarrier();
+        AbstractSpan span = ContextManager.createExitSpan(getRequestURIString(url), carrier, getIPAndPort(url));
 
         span.setComponent(SPRING_CLOUD_GATEWAY);
-        b = true;
+        Tags.URL.set(span, url.toString());
+        Tags.HTTP.METHOD.set(span, exchange.getRequest().getMethodValue());
+        SpanLayer.asHttp(span);
+
+        if (exchange instanceof EnhancedInstance) {
+            ((EnhancedInstance) exchange).setSkyWalkingDynamicField(carrier);
+        }
+
+        //user async interface
+        span.prepareForAsync();
+        ContextManager.stopSpan();
+
+        objInst.setSkyWalkingDynamicField(span);
     }
 
     public static EnhancedInstance getInstance(Object o) {
@@ -64,12 +79,29 @@ public class WebFilterInterceptor implements InstanceMethodsAroundInterceptor {
     @Override
     public Object afterMethod(EnhancedInstance objInst, Method method, Object[] allArguments, Class<?>[] argumentsTypes,
                               Object ret) throws Throwable {
-        return ret;
+
+        AbstractSpan span = (AbstractSpan) objInst.getSkyWalkingDynamicField();
+        return ((Mono<?>) ret)
+            .doOnSuccess(o -> Tags.STATUS_CODE.set(span, Integer.toString(OK.value())))
+            .doOnError(t -> {
+                Tags.STATUS_CODE.set(span, Integer.toString(INTERNAL_SERVER_ERROR.value()));
+                span.errorOccurred();
+                span.log(t);
+            }).doFinally(s -> span.asyncFinish());
     }
 
     @Override
     public void handleMethodException(EnhancedInstance objInst, Method method, Object[] allArguments,
                                       Class<?>[] argumentsTypes, Throwable t) {
         ContextManager.activeSpan().log(t);
+    }
+
+    private String getRequestURIString(URI uri) {
+        String requestPath = uri.getPath();
+        return requestPath != null && requestPath.length() > 0 ? requestPath : "/";
+    }
+
+    private String getIPAndPort(URI uri) {
+        return uri.getHost() + ":" + uri.getPort();
     }
 }

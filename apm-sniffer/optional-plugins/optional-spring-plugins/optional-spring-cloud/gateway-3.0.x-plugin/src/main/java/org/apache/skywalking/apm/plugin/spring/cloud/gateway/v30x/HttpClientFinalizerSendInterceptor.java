@@ -17,9 +17,6 @@
 
 package org.apache.skywalking.apm.plugin.spring.cloud.gateway.v30x;
 
-import java.lang.reflect.Method;
-import java.net.URL;
-import java.util.function.BiFunction;
 import org.apache.skywalking.apm.agent.core.context.CarrierItem;
 import org.apache.skywalking.apm.agent.core.context.ContextCarrier;
 import org.apache.skywalking.apm.agent.core.context.ContextManager;
@@ -34,13 +31,20 @@ import org.reactivestreams.Publisher;
 import reactor.netty.NettyOutbound;
 import reactor.netty.http.client.HttpClientRequest;
 
+import java.lang.reflect.Method;
+import java.net.URL;
+import java.util.function.BiFunction;
+
 import static org.apache.skywalking.apm.network.trace.component.ComponentsDefine.SPRING_CLOUD_GATEWAY;
 
 public class HttpClientFinalizerSendInterceptor implements InstanceMethodsAroundInterceptor {
+
     @Override
     public void beforeMethod(EnhancedInstance objInst, Method method, Object[] allArguments, Class<?>[] argumentsTypes,
                              MethodInterceptResult result) throws Throwable {
         EnhanceObjectCache enhanceObjectCache = (EnhanceObjectCache) objInst.getSkyWalkingDynamicField();
+        if (!ContextManager.isActive()) return;
+
         AbstractSpan span = ContextManager.activeSpan();
         span.prepareForAsync();
 
@@ -57,21 +61,21 @@ public class HttpClientFinalizerSendInterceptor implements InstanceMethodsAround
             ContextManager.stopSpan(abstractSpan);
             ContextManager.stopSpan(span);
 
-            BiFunction<? super HttpClientRequest, ? super NettyOutbound, ? extends Publisher<Void>> finalSender = (BiFunction<? super HttpClientRequest, ? super NettyOutbound, ? extends Publisher<Void>>) allArguments[0];
-            allArguments[0] = new BiFunction<HttpClientRequest, NettyOutbound, Publisher<Void>>() {
-                @Override
-                public Publisher<Void> apply(HttpClientRequest request, NettyOutbound outbound) {
-                    Publisher publisher = finalSender.apply(request, outbound);
+            @SuppressWarnings("unchecked")
+            BiFunction<? super HttpClientRequest, ? super NettyOutbound, ? extends Publisher<Void>> finalSender =
+                (BiFunction<? super HttpClientRequest, ? super NettyOutbound, ? extends Publisher<Void>>) allArguments[0];
+            allArguments[0] = (BiFunction<HttpClientRequest, NettyOutbound, Publisher<Void>>) (request, outbound) -> {
+                Publisher publisher = finalSender.apply(request, outbound);
 
-                    CarrierItem next = contextCarrier.items();
-                    while (next.hasNext()) {
-                        next = next.next();
-                        request.requestHeaders().remove(next.getHeadKey());
-                        request.requestHeaders().set(next.getHeadKey(), next.getHeadValue());
-                    }
-                    return publisher;
+                CarrierItem next = contextCarrier.items();
+                while (next.hasNext()) {
+                    next = next.next();
+                    request.requestHeaders().remove(next.getHeadKey());
+                    request.requestHeaders().set(next.getHeadKey(), next.getHeadValue());
                 }
+                return publisher;
             };
+
             enhanceObjectCache.setCacheSpan(abstractSpan);
         }
 
